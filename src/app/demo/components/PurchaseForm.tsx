@@ -95,8 +95,9 @@ export default function PurchaseForm() {
       toast.success(
         `Purchase registered: $${total.toFixed(2)} (${items.length} products)`
       );
-    } catch (err: any) {
-      toast.error(err?.message || "Error registering purchase");
+    } catch (err) {
+      const error = err as Error;
+      toast.error(error?.message || "Error registering purchase");
     } finally {
       setSubmitting(false);
     }

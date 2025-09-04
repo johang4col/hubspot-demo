@@ -72,9 +72,10 @@ export default function HistoryView() {
       }
       setContact(data.contact);
       setDeals(Array.isArray(data.deals) ? data.deals : []);
-    } catch (err: any) {
+    } catch (err) {
       if (myReqId !== reqCounter.current) return;
-      setError(err?.message || "Error");
+      const error = err as Error;
+      setError(error?.message || "Error");
     } finally {
       if (myReqId === reqCounter.current) setLoading(false);
     }
