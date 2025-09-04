@@ -1,11 +1,10 @@
-// HubSpot OAuth tokens with automatic refresh + Redis persistence
 import { redis } from "./redis";
 
 export type Tokens = {
   access_token: string;
   refresh_token: string;
-  expires_in: number; // seconds
-  expires_at: number; // epoch ms
+  expires_in: number;
+  expires_at: number;
   scope?: string;
   token_type?: string;
 };
@@ -14,12 +13,11 @@ const REDIS_KEY = "hs:oauth:tokens";
 
 declare global {
   var __HS_TOKENS__: Tokens | null | undefined;
-
   var __HS_LOADING__: Promise<void> | null | undefined;
-
   var __HS_REFRESHING__: Promise<void> | null | undefined;
 }
-const g = globalThis as any;
+
+const g = globalThis as Record<string, unknown>;
 if (typeof g.__HS_TOKENS__ === "undefined") g.__HS_TOKENS__ = null;
 if (typeof g.__HS_LOADING__ === "undefined") g.__HS_LOADING__ = null;
 if (typeof g.__HS_REFRESHING__ === "undefined") g.__HS_REFRESHING__ = null;
@@ -37,7 +35,8 @@ async function loadOnceFromRedis() {
       const t = await redis.get<Tokens>(REDIS_KEY);
       if (t) g.__HS_TOKENS__ = t;
     } catch (e) {
-      console.warn("Redis load tokens failed:", (e as any)?.message || e);
+      const error = e as Error;
+      console.warn("Redis load tokens failed:", error?.message || e);
     }
   })();
   await g.__HS_LOADING__;
@@ -57,13 +56,14 @@ export async function setTokens(t: Omit<Tokens, "expires_at">) {
   try {
     await saveToRedis(tokens);
   } catch (e) {
-    console.warn("Redis save tokens failed:", (e as any)?.message || e);
+    const error = e as Error;
+    console.warn("Redis save tokens failed:", error?.message || e);
   }
 }
 
 export async function getTokens(): Promise<Tokens | null> {
   if (!g.__HS_TOKENS__) await loadOnceFromRedis();
-  return g.__HS_TOKENS__ ?? null;
+  return (g.__HS_TOKENS__ as Tokens | null) ?? null;
 }
 
 export async function clearTokens() {
@@ -73,23 +73,22 @@ export async function clearTokens() {
   } catch {}
 }
 
-// Return a valid access token; refresh automatically if near expiry.
 export async function ensureAccessToken(): Promise<string | null> {
-  let tok = await getTokens();
+  const tok = await getTokens();
   if (!tok) return null;
 
   const skewMs = 30_000;
   if (Date.now() + skewMs < tok.expires_at) return tok.access_token;
 
-  // Coalesce refresh
   if (g.__HS_REFRESHING__) {
     await g.__HS_REFRESHING__;
     return (await getTokens())?.access_token ?? null;
   }
 
   g.__HS_REFRESHING__ = refreshWithRetry(tok.refresh_token)
-    .catch((e: any) => {
-      console.error("HubSpot refresh failed:", e?.message || e);
+    .catch((e) => {
+      const error = e as Error;
+      console.error("HubSpot refresh failed:", error?.message || e);
       return clearTokens();
     })
     .finally(() => {

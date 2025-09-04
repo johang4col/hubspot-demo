@@ -9,10 +9,39 @@ const BASE = process.env.HUBSPOT_BASE_URL || "https://api.hubapi.com";
 
 type HSObj = {
   id: string;
-  properties?: Record<string, any>;
+  properties?: Record<string, string>;
 };
 
-async function hs(path: string, token: string, init?: RequestInit) {
+type HubSpotSearchResult = {
+  results?: HSObj[];
+};
+
+type HubSpotAssociationResult = {
+  results?: Array<{ toObjectId?: string }>;
+};
+
+type HubSpotBatchResult = {
+  results?: HSObj[];
+};
+
+type HubSpotErrorPayload = {
+  message?: string;
+  errors?: Array<{ message?: string }>;
+};
+
+type LineItem = {
+  id: string;
+  name?: string;
+  quantity: number;
+  price: number;
+  subtotal: number;
+};
+
+async function hs(
+  path: string,
+  token: string,
+  init?: RequestInit
+): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
@@ -22,13 +51,14 @@ async function hs(path: string, token: string, init?: RequestInit) {
     },
   });
   if (!res.ok) {
-    let payload: any = null;
+    let payload: unknown = null;
     try {
       payload = await res.json();
     } catch {}
+    const errorPayload = payload as HubSpotErrorPayload;
     const msg =
-      payload?.message ||
-      payload?.errors?.[0]?.message ||
+      errorPayload?.message ||
+      errorPayload?.errors?.[0]?.message ||
       (await res.text().catch(() => res.statusText));
     throw new Error(`HubSpot ${res.status} ${path}: ${msg}`);
   }
@@ -56,7 +86,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Missing email" }, { status: 400 });
     }
 
-    const search = await hs(`/crm/v3/objects/contacts/search`, token, {
+    const search = (await hs(`/crm/v3/objects/contacts/search`, token, {
       method: "POST",
       body: JSON.stringify({
         filterGroups: [
@@ -67,7 +97,7 @@ export async function GET(req: NextRequest) {
         properties: ["email", "firstname", "lastname"],
         limit: 1,
       }),
-    });
+    })) as HubSpotSearchResult;
 
     if (!search?.results?.length) {
       return NextResponse.json({ contact: null, deals: [] }, { status: 200 });
@@ -76,13 +106,15 @@ export async function GET(req: NextRequest) {
     const contact: HSObj = search.results[0];
     const contactId = contact.id;
 
-    const assocDeals = await hs(
+    const assocDeals = (await hs(
       `/crm/v4/objects/contacts/${contactId}/associations/deals?limit=100`,
       token
-    );
+    )) as HubSpotAssociationResult;
 
     const dealIds: string[] =
-      assocDeals?.results?.map((r: any) => r.toObjectId).filter(Boolean) || [];
+      (assocDeals?.results
+        ?.map((r) => r.toObjectId)
+        .filter(Boolean) as string[]) || [];
 
     if (dealIds.length === 0) {
       return NextResponse.json(
@@ -94,7 +126,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const dealsBatch = await hs(`/crm/v3/objects/deals/batch/read`, token, {
+    const dealsBatch = (await hs(`/crm/v3/objects/deals/batch/read`, token, {
       method: "POST",
       body: JSON.stringify({
         properties: [
@@ -106,32 +138,39 @@ export async function GET(req: NextRequest) {
         ],
         inputs: dealIds.map((id) => ({ id })),
       }),
-    });
+    })) as HubSpotBatchResult;
 
     const deals: HSObj[] = dealsBatch?.results || [];
 
-    const lineItemsByDeal: Record<string, any[]> = {};
+    const lineItemsByDeal: Record<string, LineItem[]> = {};
 
     for (const d of deals) {
-      const assocLI = await hs(
+      const assocLI = (await hs(
         `/crm/v4/objects/deals/${d.id}/associations/line_items?limit=200`,
         token
-      );
+      )) as HubSpotAssociationResult;
+
       const liIds: string[] =
-        assocLI?.results?.map((r: any) => r.toObjectId).filter(Boolean) || [];
+        (assocLI?.results
+          ?.map((r) => r.toObjectId)
+          .filter(Boolean) as string[]) || [];
 
       if (liIds.length === 0) {
         lineItemsByDeal[d.id] = [];
         continue;
       }
 
-      const liBatch = await hs(`/crm/v3/objects/line_items/batch/read`, token, {
-        method: "POST",
-        body: JSON.stringify({
-          properties: ["name", "quantity", "price"],
-          inputs: liIds.map((id) => ({ id })),
-        }),
-      });
+      const liBatch = (await hs(
+        `/crm/v3/objects/line_items/batch/read`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            properties: ["name", "quantity", "price"],
+            inputs: liIds.map((id) => ({ id })),
+          }),
+        }
+      )) as HubSpotBatchResult;
 
       lineItemsByDeal[d.id] = (liBatch?.results || []).map((li: HSObj) => ({
         id: li.id,
@@ -161,13 +200,18 @@ export async function GET(req: NextRequest) {
           createdate: d.properties?.createdate,
           lineItems: lineItemsByDeal[d.id] || [],
         }))
-        .sort((a, b) => (a.createdate > b.createdate ? -1 : 1)),
+        .sort((a, b) => {
+          const dateA = a.createdate || "";
+          const dateB = b.createdate || "";
+          return dateA > dateB ? -1 : 1;
+        }),
     };
 
     return NextResponse.json(out, { status: 200 });
-  } catch (err: any) {
+  } catch (err) {
+    const error = err as Error;
     return NextResponse.json(
-      { error: err?.message || "Server error" },
+      { error: error?.message || "Server error" },
       { status: 500 }
     );
   }

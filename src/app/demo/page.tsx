@@ -21,6 +21,39 @@ const MOCK_META: ConcurrencyMeta = {
   ts: new Date().toISOString(),
 };
 
+type ApiDealResponse = {
+  id: string;
+  dealname: string;
+  dealstage: string;
+  amount: number;
+  lineItems?: Array<{
+    id: string;
+    name?: string;
+    price: number;
+    quantity: number;
+    subtotal: number;
+  }>;
+};
+
+type ApiContactResponse = {
+  id: string;
+  email: string;
+  firstname?: string;
+  lastname?: string;
+};
+
+type ApiHistoryResponse = {
+  contact?: ApiContactResponse;
+  deals?: ApiDealResponse[];
+  meta?: {
+    cache?: string;
+    coalesced?: boolean;
+    apiCallsSaved?: number;
+    retries?: number;
+    ts?: string;
+  };
+};
+
 export default function DemoPage() {
   const [tab, setTab] = useState<"purchase" | "history">("purchase");
 
@@ -58,12 +91,14 @@ export default function DemoPage() {
         }
       );
 
-      const data = await res.json();
+      const data = (await res.json()) as ApiHistoryResponse;
 
       if (myReqId !== reqCounter.current) return;
 
       if (!res.ok) {
-        throw new Error(data?.error || "Request failed");
+        throw new Error(
+          (data as unknown as { error?: string })?.error || "Request failed"
+        );
       }
 
       const uiContact: Contact | null = data.contact
@@ -76,14 +111,14 @@ export default function DemoPage() {
         : null;
 
       const uiDeals: Deal[] = Array.isArray(data.deals)
-        ? data.deals.map((d: any) => ({
+        ? data.deals.map((d) => ({
             id: d.id,
             dealname: d.dealname,
             stage: d.dealstage,
             amount: Number(d.amount ?? 0),
-            lineItems: (d.lineItems || []).map((li: any) => ({
+            lineItems: (d.lineItems || []).map((li) => ({
               id: li.id,
-              name: li.name,
+              name: li.name || "",
               price: Number(li.price ?? 0),
               quantity: Number(li.quantity ?? 0),
               subtotal: Number(li.subtotal ?? 0),
@@ -94,9 +129,10 @@ export default function DemoPage() {
       setContact(uiContact);
       setDeals(uiDeals);
       setMeta({ ...MOCK_META, ts: new Date().toISOString() });
-    } catch (e: any) {
+    } catch (e) {
       if (myReqId !== reqCounter.current) return;
-      setErr(e?.message || "Error");
+      const error = e as Error;
+      setErr(error?.message || "Error");
     } finally {
       if (myReqId === reqCounter.current) setLoading(false);
     }
@@ -152,21 +188,22 @@ export default function DemoPage() {
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ email: q, parallel: 8 }),
                       });
-                      const data = await res.json();
+                      const data = (await res.json()) as ApiHistoryResponse;
                       if (!res.ok)
                         throw new Error(
-                          data?.error || "Concurrency test failed"
+                          (data as unknown as { error?: string })?.error ||
+                            "Concurrency test failed"
                         );
 
                       const uiDeals: Deal[] = Array.isArray(data.deals)
-                        ? data.deals.map((d: any) => ({
+                        ? data.deals.map((d) => ({
                             id: d.id,
                             dealname: d.dealname,
                             stage: d.dealstage,
                             amount: Number(d.amount ?? 0),
-                            lineItems: (d.lineItems || []).map((li: any) => ({
+                            lineItems: (d.lineItems || []).map((li) => ({
                               id: li.id,
-                              name: li.name,
+                              name: li.name || "",
                               price: Number(li.price ?? 0),
                               quantity: Number(li.quantity ?? 0),
                               subtotal: Number(li.subtotal ?? 0),
@@ -184,14 +221,15 @@ export default function DemoPage() {
                       setDeals(uiDeals);
 
                       setMeta({
-                        cache: data.meta?.cache || "miss",
+                        cache: (data.meta?.cache as "hit" | "miss") || "miss",
                         coalesced: !!data.meta?.coalesced,
                         apiCallsSaved: Number(data.meta?.apiCallsSaved || 0),
                         retries: Number(data.meta?.retries || 0),
                         ts: data.meta?.ts || new Date().toISOString(),
                       });
-                    } catch (err: any) {
-                      setErr(err?.message || "Error");
+                    } catch (err) {
+                      const error = err as Error;
+                      setErr(error?.message || "Error");
                     }
                   }}
                 >

@@ -28,4 +28,25 @@ It creates contacts, deals, and line items in HubSpot, and also lets you search 
      - `crm.objects.deals.write`
      - `crm.objects.line_items.read`
      - `crm.objects.line_items.write`
-3. Add redirect URI:
+3. Add redirect URI: http://localhost:3000/api/auth/hubspot/callback
+
+4. Copy your **Client ID** and **Client Secret**.
+
+### 2. Environment Variables
+
+Create a file `.env.local` in the root:
+
+```env
+HUBSPOT_CLIENT_ID=your_client_id
+HUBSPOT_CLIENT_SECRET=your_client_secret
+HUBSPOT_REDIRECT_URI=http://localhost:3000/api/auth/hubspot/callback
+HUBSPOT_BASE_URL=https://api.hubapi.com
+
+DEFAULT_PIPELINE=default
+DEFAULT_DEALSTAGE=appointmentscheduled
+
+# Optional: Redis for token persistence
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
+
+```

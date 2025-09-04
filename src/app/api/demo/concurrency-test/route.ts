@@ -7,28 +7,62 @@ export const revalidate = 0;
 
 const BASE = process.env.HUBSPOT_BASE_URL || "https://api.hubapi.com";
 
-/**
- * In-memory cache + in-flight coalescing (demo).
- * If you already wired Upstash Redis for tokens, you could mirror this with Redis too.
- */
-type CacheEntry = { at: number; payload: any };
-type InFlightMap = Map<string, Promise<any>>;
+type HubSpotContact = {
+  id: string;
+  properties?: Record<string, string>;
+};
+
+type HubSpotDeal = {
+  id: string;
+  properties?: Record<string, string>;
+};
+
+type HubSpotLineItem = {
+  id: string;
+  properties?: Record<string, string>;
+};
+
+type HubSpotSearchResult = {
+  results?: HubSpotContact[];
+};
+
+type HubSpotAssociationResult = {
+  results?: Array<{ toObjectId?: string }>;
+};
+
+type HubSpotBatchResult = {
+  results?: HubSpotLineItem[];
+};
+
+type HubSpotErrorPayload = {
+  message?: string;
+  errors?: Array<{ message?: string }>;
+};
+
+type CacheEntry = { at: number; payload: unknown };
+type InFlightMap = Map<string, Promise<unknown>>;
 
 declare global {
-  // eslint-disable-next-line no-var
   var __HS_DEMO_CACHE__: Map<string, CacheEntry> | undefined;
-  // eslint-disable-next-line no-var
   var __HS_DEMO_INFLIGHT__: InFlightMap | undefined;
 }
-const g = globalThis as any;
+
+const g = globalThis as Record<string, unknown>;
 if (!g.__HS_DEMO_CACHE__) g.__HS_DEMO_CACHE__ = new Map();
 if (!g.__HS_DEMO_INFLIGHT__) g.__HS_DEMO_INFLIGHT__ = new Map();
-const CACHE: Map<string, CacheEntry> = g.__HS_DEMO_CACHE__;
-const INFLIGHT: InFlightMap = g.__HS_DEMO_INFLIGHT__;
+const CACHE: Map<string, CacheEntry> = g.__HS_DEMO_CACHE__ as Map<
+  string,
+  CacheEntry
+>;
+const INFLIGHT: InFlightMap = g.__HS_DEMO_INFLIGHT__ as InFlightMap;
 
-const CACHE_TTL_MS = 30_000; // 30s demo cache
+const CACHE_TTL_MS = 30_000;
 
-async function hs(path: string, token: string, init?: RequestInit) {
+async function hs(
+  path: string,
+  token: string,
+  init?: RequestInit
+): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
@@ -38,23 +72,22 @@ async function hs(path: string, token: string, init?: RequestInit) {
     },
   });
   if (!res.ok) {
-    let payload: any = null;
+    let payload: unknown = null;
     try {
       payload = await res.json();
     } catch {}
+    const errorPayload = payload as HubSpotErrorPayload;
     const msg =
-      payload?.message ||
-      payload?.errors?.[0]?.message ||
+      errorPayload?.message ||
+      errorPayload?.errors?.[0]?.message ||
       (await res.text().catch(() => res.statusText));
     throw new Error(`HubSpot ${res.status} ${path}: ${msg}`);
   }
   return res.json();
 }
 
-// Core: read contact (and 1st deal & its items) – enough to stress concurrency.
 async function readSnapshot(email: string, token: string) {
-  // 1) find contact
-  const search = await hs(`/crm/v3/objects/contacts/search`, token, {
+  const search = (await hs(`/crm/v3/objects/contacts/search`, token, {
     method: "POST",
     body: JSON.stringify({
       filterGroups: [
@@ -63,17 +96,18 @@ async function readSnapshot(email: string, token: string) {
       properties: ["email", "firstname", "lastname"],
       limit: 1,
     }),
-  });
+  })) as HubSpotSearchResult;
+
   if (!search?.results?.length) return { contact: null, deals: [] };
 
   const contact = search.results[0];
   const contactId: string = contact.id;
 
-  // 2) associated deals (limit 1 for demo)
-  const assocDeals = await hs(
+  const assocDeals = (await hs(
     `/crm/v4/objects/contacts/${contactId}/associations/deals?limit=1`,
     token
-  );
+  )) as HubSpotAssociationResult;
+
   const dealId: string | undefined = assocDeals?.results?.[0]?.toObjectId;
   if (!dealId) {
     return {
@@ -87,28 +121,37 @@ async function readSnapshot(email: string, token: string) {
     };
   }
 
-  // 3) read deal
-  const deal = await hs(`/crm/v3/objects/deals/${dealId}`, token, {
+  const deal = (await hs(`/crm/v3/objects/deals/${dealId}`, token, {
     method: "GET",
-  });
+  })) as HubSpotDeal;
 
-  // 4) line items for that deal
-  const assocLI = await hs(
+  const assocLI = (await hs(
     `/crm/v4/objects/deals/${dealId}/associations/line_items?limit=200`,
     token
-  );
+  )) as HubSpotAssociationResult;
+
   const liIds: string[] =
-    assocLI?.results?.map((r: any) => r.toObjectId).filter(Boolean) || [];
-  let items: any[] = [];
+    (assocLI?.results?.map((r) => r.toObjectId).filter(Boolean) as string[]) ||
+    [];
+
+  let items: Array<{
+    id: string;
+    name?: string;
+    quantity: number;
+    price: number;
+    subtotal: number;
+  }> = [];
+
   if (liIds.length) {
-    const liBatch = await hs(`/crm/v3/objects/line_items/batch/read`, token, {
+    const liBatch = (await hs(`/crm/v3/objects/line_items/batch/read`, token, {
       method: "POST",
       body: JSON.stringify({
         properties: ["name", "quantity", "price"],
         inputs: liIds.map((id) => ({ id })),
       }),
-    });
-    items = (liBatch?.results || []).map((li: any) => ({
+    })) as HubSpotBatchResult;
+
+    items = (liBatch?.results || []).map((li) => ({
       id: li.id,
       name: li.properties?.name,
       quantity: Number(li.properties?.quantity ?? 0),
@@ -138,12 +181,6 @@ async function readSnapshot(email: string, token: string) {
   };
 }
 
-/**
- * Coalesced reader:
- * - If cache fresh → return cache (cache: "hit").
- * - If request for same key is in-flight → await same Promise (coalesced=true).
- * - Otherwise → do the HubSpot calls (cache: "miss"), then fill cache & resolve all waiters.
- */
 async function coalescedRead(email: string, token: string) {
   const key = `contact:${email.toLowerCase()}`;
   const now = Date.now();
@@ -218,7 +255,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing email" }, { status: 400 });
     }
 
-    // Launch N parallel reads (simulate multiple users hitting the same key)
     const tasks = Array.from({
       length: Math.max(1, Math.min(20, Number(parallel) || 5)),
     }).map(() => coalescedRead(email.trim(), token));
@@ -227,7 +263,6 @@ export async function POST(req: NextRequest) {
     const results = await Promise.all(tasks);
     const ms = Date.now() - start;
 
-    // Aggregate meta
     const meta = {
       cache: results[0].meta.cache,
       coalesced: results.some((r) => r.meta.coalesced),
@@ -240,11 +275,17 @@ export async function POST(req: NextRequest) {
       ts: new Date().toISOString(),
     };
 
-    // Return the first payload (all are identical by coalescing) + meta
-    return NextResponse.json({ ...results[0].payload, meta }, { status: 200 });
-  } catch (e: any) {
     return NextResponse.json(
-      { error: e?.message || "Server error" },
+      {
+        ...(results[0].payload as Record<string, unknown>),
+        meta,
+      },
+      { status: 200 }
+    );
+  } catch (e) {
+    const error = e as Error;
+    return NextResponse.json(
+      { error: error?.message || "Server error" },
       { status: 500 }
     );
   }

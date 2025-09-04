@@ -3,14 +3,22 @@ import { ensureAccessToken } from "@/lib/hubspotTokens";
 
 export const runtime = "nodejs";
 
-type Stored = { at: number; response: any };
+type PurchaseResponse = {
+  contactId: string;
+  dealId: string;
+  lineItemIds: string[];
+  amount: number;
+};
+
+type Stored = { at: number; response: PurchaseResponse };
+
 declare global {
-  // eslint-disable-next-line no-var
   var __IDEMP_STORE__: Map<string, Stored> | undefined;
 }
-const g = globalThis as any;
+
+const g = globalThis as Record<string, unknown>;
 if (!g.__IDEMP_STORE__) g.__IDEMP_STORE__ = new Map<string, Stored>();
-const IDEMP = g.__IDEMP_STORE__!;
+const IDEMP = g.__IDEMP_STORE__ as Map<string, Stored>;
 const IDEMP_TTL_MS = 5 * 60 * 1000;
 
 function getIdem(key: string | null): Stored | null {
@@ -23,11 +31,25 @@ function getIdem(key: string | null): Stored | null {
   }
   return s;
 }
-function setIdem(key: string, response: any) {
+
+function setIdem(key: string, response: PurchaseResponse) {
   IDEMP.set(key, { at: Date.now(), response });
 }
 
 type Product = { name: string; price: number; quantity: number };
+
+type HubSpotErrorPayload = {
+  message?: string;
+  errors?: Array<{ message?: string }>;
+};
+
+type HubSpotSearchResult = {
+  results?: Array<{ id: string; properties?: Record<string, string> }>;
+};
+
+type HubSpotCreateResult = {
+  id: string;
+};
 
 function sumAmount(products: Product[]) {
   return products.reduce(
@@ -90,7 +112,7 @@ export async function POST(req: NextRequest) {
       body.dealstage || process.env.DEFAULT_DEALSTAGE || "appointmentscheduled";
     const baseUrl = process.env.HUBSPOT_BASE_URL || "https://api.hubapi.com";
 
-    const hs = async (path: string, init?: RequestInit) => {
+    const hs = async (path: string, init?: RequestInit): Promise<unknown> => {
       const res = await fetch(`${baseUrl}${path}`, {
         ...init,
         headers: {
@@ -100,20 +122,21 @@ export async function POST(req: NextRequest) {
         },
       });
       if (!res.ok) {
-        let payload: any = null;
+        let payload: unknown = null;
         try {
           payload = await res.json();
         } catch {}
+        const errorPayload = payload as HubSpotErrorPayload;
         const msg =
-          payload?.message ||
-          payload?.errors?.[0]?.message ||
+          errorPayload?.message ||
+          errorPayload?.errors?.[0]?.message ||
           (await res.text().catch(() => res.statusText));
         throw new Error(`HubSpot ${res.status} ${path}: ${msg}`);
       }
       return res.json();
     };
 
-    const search = await hs(`/crm/v3/objects/contacts/search`, {
+    const search = (await hs(`/crm/v3/objects/contacts/search`, {
       method: "POST",
       body: JSON.stringify({
         filterGroups: [
@@ -126,7 +149,7 @@ export async function POST(req: NextRequest) {
         properties: ["email", "firstname", "lastname"],
         limit: 1,
       }),
-    });
+    })) as HubSpotSearchResult;
 
     let contactId: string;
     if (search?.results?.length) {
@@ -143,7 +166,7 @@ export async function POST(req: NextRequest) {
         });
       }
     } else {
-      const created = await hs(`/crm/v3/objects/contacts`, {
+      const created = (await hs(`/crm/v3/objects/contacts`, {
         method: "POST",
         body: JSON.stringify({
           properties: {
@@ -152,11 +175,11 @@ export async function POST(req: NextRequest) {
             lastname: body.lastname || null,
           },
         }),
-      });
+      })) as HubSpotCreateResult;
       contactId = created.id;
     }
 
-    const deal = await hs(`/crm/v3/objects/deals`, {
+    const deal = (await hs(`/crm/v3/objects/deals`, {
       method: "POST",
       body: JSON.stringify({
         properties: {
@@ -166,7 +189,7 @@ export async function POST(req: NextRequest) {
           dealstage,
         },
       }),
-    });
+    })) as HubSpotCreateResult;
     const dealId: string = deal.id;
 
     await hs(
@@ -176,7 +199,7 @@ export async function POST(req: NextRequest) {
 
     const lineItemIds: string[] = [];
     for (const p of body.products) {
-      const li = await hs(`/crm/v3/objects/line_items`, {
+      const li = (await hs(`/crm/v3/objects/line_items`, {
         method: "POST",
         body: JSON.stringify({
           properties: {
@@ -185,7 +208,7 @@ export async function POST(req: NextRequest) {
             price: Number(p.price),
           },
         }),
-      });
+      })) as HubSpotCreateResult;
       lineItemIds.push(li.id);
 
       await hs(
@@ -198,9 +221,10 @@ export async function POST(req: NextRequest) {
     if (idemKey) setIdem(idemKey, payload);
 
     return NextResponse.json(payload, { status: 201 });
-  } catch (err: any) {
+  } catch (err) {
+    const error = err as Error;
     return NextResponse.json(
-      { error: err?.message || "Server error" },
+      { error: error?.message || "Server error" },
       { status: 500 }
     );
   }
